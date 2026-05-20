@@ -9,6 +9,11 @@ const SUPABASE_FETCH_TIMEOUT_MS = 12_000;
 
 let client: SupabaseClient | null = null;
 
+/** Drop cached client after connect timeouts so the next insert uses a fresh socket. */
+export function resetSupabaseAdminClient(): void {
+  client = null;
+}
+
 function createTimedFetch(): typeof fetch {
   return (input, init) =>
     fetch(input, {

@@ -160,6 +160,22 @@ export function formatVapiError(
   return String(error ?? "Unknown Vapi error.");
 }
 
+/** Errors that may succeed on a single guarded retry after stop + brief delay. */
+export function isTransientVapiError(
+  error: unknown
+): boolean {
+  const msg = formatVapiError(error).toLowerCase();
+
+  return (
+    msg.includes("load failed") ||
+    msg.includes("connection-error") ||
+    msg.includes("websocket") ||
+    msg.includes("failed to load call object") ||
+    msg.includes("wasm_or_worker_not_ready") ||
+    msg.includes("start-method-error")
+  );
+}
+
 /** Daily/Vapi owns mic capture during join — preflight is opt-in only. */
 export function logVapi(
   level: "info" | "warn" | "error",

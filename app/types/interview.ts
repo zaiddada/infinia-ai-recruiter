@@ -51,6 +51,12 @@ export type EvaluateResponse = {
   /** Whether the report was written to Supabase (when configured). */
   persisted?: boolean;
   dbConfigured?: boolean;
+  /** Background persistence status — voice/eval succeed even when not `saved`. */
+  persistStatus?:
+    | "saved"
+    | "queued"
+    | "skipped"
+    | "failed";
 };
 
 export type TranscriptStats = {

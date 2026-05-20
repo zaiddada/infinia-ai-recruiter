@@ -3,10 +3,9 @@ import { z } from "zod";
 import { cleanTranscript } from "@/app/lib/transcriptCleaner";
 import { parseEvaluation } from "@/app/lib/evaluationParser";
 import { validateTranscriptForEvaluation } from "@/app/lib/evaluationGuard";
-import {
-  getSupabaseAdmin,
-  isSupabaseConfigured,
-} from "@/lib/supabase/admin";
+import { isSupabaseConfigured } from "@/lib/supabase/admin";
+import { queueCandidateReportPersist } from "@/lib/supabase/persistReport";
+import { logServer } from "@/lib/logging";
 
 import { buildEvaluationPrompt } from "./prompt";
 
@@ -88,6 +87,8 @@ function clamp(
 }
 
 function calculateDeterministicScore(
+  // Route-internal Gemini JSON is loosely typed before parseEvaluation normalizes it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parsed: any,
   validation: ReturnType<
     typeof validateTranscriptForEvaluation
@@ -158,6 +159,7 @@ function calculateDeterministicScore(
 
 function extractEvidenceCoverage(
   transcript: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parsed: any
 ) {
   const evidence =
@@ -371,6 +373,7 @@ export async function POST(
       );
 
     let rawEvaluation = "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let parsed: any = null;
 
     let recoveryUsed =
@@ -552,70 +555,29 @@ export async function POST(
       );
     }
 
-    let persisted = false;
+    const dbConfigured = isSupabaseConfigured();
+    const persistStatus = dbConfigured
+      ? ("queued" as const)
+      : ("skipped" as const);
 
-    try {
-      const supabase =
-        getSupabaseAdmin();
+    if (dbConfigured) {
+      const payload = {
+        candidate_name: "Unknown Candidate",
+        transcript: cleanedTranscript,
+        evaluation: parsed,
+        recommendation: parsed.hiringRecommendation,
+        score: deterministic.overall,
+        confidence: parsed.confidence,
+        transcript_integrity: parsed.transcriptIntegrity,
+        low_signal: lowSignal,
+        telemetry: parsed.telemetry,
+        created_at: new Date().toISOString(),
+      };
 
-      if (supabase) {
-        const payload = {
-          candidate_name:
-            "Unknown Candidate",
-
-          transcript:
-            cleanedTranscript,
-
-          evaluation:
-            parsed,
-
-          recommendation:
-            parsed.hiringRecommendation,
-
-          score:
-            deterministic.overall,
-
-          confidence:
-            parsed.confidence,
-
-          transcript_integrity:
-            parsed.transcriptIntegrity,
-
-          low_signal:
-            lowSignal,
-
-          telemetry:
-            parsed.telemetry,
-
-          created_at:
-            new Date().toISOString(),
-        };
-
-        const {
-          error,
-        } =
-          await supabase
-            .from(
-              "candidate_reports"
-            )
-            .insert([
-              payload,
-            ]);
-
-        if (error) {
-          console.error(
-            `[evaluate:${requestId}] supabase_insert_error`,
-            error
-          );
-        } else {
-          persisted = true;
-        }
-      }
-    } catch (dbError) {
-      console.error(
-        `[evaluate:${requestId}] database_crash`,
-        dbError
-      );
+      queueCandidateReportPersist(requestId, payload);
+      logServer("evaluate", "persist_queued", {
+        requestId,
+      });
     }
 
     console.info(
@@ -643,8 +605,9 @@ export async function POST(
       ok: true,
       evaluation: rawEvaluation,
       parsed,
-      persisted,
-      dbConfigured: isSupabaseConfigured(),
+      persisted: false,
+      persistStatus,
+      dbConfigured,
     });
   } catch (error) {
     const {
