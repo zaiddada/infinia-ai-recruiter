@@ -48,6 +48,9 @@ export type EvaluateResponse = {
   error?: string;
   evaluation?: string;
   parsed?: ParsedEvaluation;
+  /** Whether the report was written to Supabase (when configured). */
+  persisted?: boolean;
+  dbConfigured?: boolean;
 };
 
 export type TranscriptStats = {

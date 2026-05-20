@@ -1,13 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Vapi from "@vapi-ai/web";
 
 import {
   ANALYZING_STEPS,
   EVALUATE_TIMEOUT_MS,
   MIN_TRANSCRIPT_CHUNK_LENGTH,
-  VAPI_ASSISTANT_ID,
 } from "@/app/lib/constants";
 import {
   fetchWithTimeout,
@@ -15,6 +13,13 @@ import {
 } from "@/app/lib/fetchWithTimeout";
 import { mergeTranscriptLine } from "@/app/lib/transcriptCleaner";
 import { computeTranscriptStats } from "@/app/lib/transcriptStats";
+import { VapiSessionManager } from "@/app/lib/vapi/VapiSessionManager";
+import {
+  formatVapiError,
+  getVapiEnv,
+  logVapi,
+  validateVapiConfig,
+} from "@/app/lib/vapiConfig";
 import type {
   EvaluateResponse,
   InterviewPhase,
@@ -24,754 +29,622 @@ import type {
 } from "@/app/types/interview";
 
 function createMessageId(): string {
-  return `${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 9)}`;
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function scheduleIdleTask(
-  fn: () => void
-): void {
-  if (
-    typeof requestIdleCallback ===
-    "function"
-  ) {
-    requestIdleCallback(fn, {
-      timeout: 2000,
-    });
-  } else {
-    setTimeout(fn, 0);
+function extractVapiFailureMessage(
+  event: unknown
+): string | null {
+  if (!event || typeof event !== "object") {
+    return null;
   }
+
+  const record = event as Record<string, unknown>;
+  const errorField = record.error;
+
+  if (typeof errorField === "string") {
+    return errorField;
+  }
+
+  if (errorField && typeof errorField === "object") {
+    const nested = errorField as Record<string, unknown>;
+    if (typeof nested.message === "string") {
+      return nested.message;
+    }
+  }
+
+  return null;
 }
 
-function isHarmlessTeardownError(
-  error: unknown
+function isNormalCallTermination(
+  message: string
 ): boolean {
-  const message =
-    error instanceof Error
-      ? error.message
-      : String(error ?? "");
-
+  const normalized = message.toLowerCase();
   return (
-    message.includes(
-      "WASM_OR_WORKER_NOT_READY"
-    ) ||
-    message.includes(
-      "Meeting has ended"
-    ) ||
-    message
-      .toLowerCase()
-      .includes("krisp")
+    normalized.includes("meeting has ended") ||
+    normalized.includes("ejected") ||
+    normalized.includes("call ended") ||
+    normalized.includes("no-room")
   );
 }
 
+const TERMINAL_PHASES: InterviewPhase[] = [
+  "processing",
+  "complete",
+];
+
 export function useVapiInterview() {
-  const vapiRef =
-    useRef<Vapi | null>(null);
-  const transcriptRef =
-    useRef("");
-  const messagesRef =
-    useRef<TranscriptMessage[]>(
-      []
-    );
-  const callStartRef =
-    useRef<number | null>(null);
+  const sessionManagerRef = useRef(
+    VapiSessionManager.getInstance()
+  );
 
-  const durationIntervalRef =
-    useRef<ReturnType<
-      typeof setInterval
-    > | null>(null);
-  const stepIntervalRef =
-    useRef<ReturnType<
-      typeof setInterval
-    > | null>(null);
+  const transcriptRef = useRef("");
+  const messagesRef = useRef<TranscriptMessage[]>([]);
+  const callStartRef = useRef<number | null>(null);
+  const durationIntervalRef = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
+  const stepIntervalRef = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
+  const mountedRef = useRef(true);
+  const phaseRef = useRef<InterviewPhase>("idle");
+  const hasEvaluatedRef = useRef(false);
+  const startInFlightRef = useRef(false);
+  const endInFlightRef = useRef(false);
+  const callStartedRef = useRef(false);
 
-  const mountedRef =
-    useRef(true);
-  const phaseRef =
-    useRef<InterviewPhase>("idle");
-  const hasEvaluatedRef =
-    useRef(false);
-  const startInFlightRef =
-    useRef(false);
-  const endInFlightRef =
-    useRef(false);
+  const [phase, setPhase] = useState<InterviewPhase>("idle");
+  const [messages, setMessages] = useState<TranscriptMessage[]>(
+    []
+  );
+  const [evaluation, setEvaluation] = useState("");
+  const [parsedEvaluation, setParsedEvaluation] =
+    useState<ParsedEvaluation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [analyzingStep, setAnalyzingStep] = useState(0);
+  const [stats, setStats] = useState<TranscriptStats | null>(
+    null
+  );
+  const [configError, setConfigError] = useState<string | null>(
+    null
+  );
 
-  const [phase, setPhase] =
-    useState<InterviewPhase>(
-      "idle"
-    );
-  const [messages, setMessages] =
-    useState<
-      TranscriptMessage[]
-    >([]);
-  const [evaluation, setEvaluation] =
-    useState("");
-  const [
-    parsedEvaluation,
-    setParsedEvaluation,
-  ] =
-    useState<ParsedEvaluation | null>(
-      null
-    );
-  const [error, setError] =
-    useState<string | null>(
-      null
-    );
-  const [
-    durationSeconds,
-    setDurationSeconds,
-  ] = useState(0);
-  const [
-    analyzingStep,
-    setAnalyzingStep,
-  ] = useState(0);
-  const [stats, setStats] =
-    useState<TranscriptStats | null>(
-      null
-    );
+  const setPhaseSafe = useCallback((next: InterviewPhase) => {
+    phaseRef.current = next;
+    setPhase(next);
+  }, []);
 
-  const setPhaseSafe =
-    useCallback(
-      (next: InterviewPhase) => {
-        phaseRef.current = next;
-        setPhase(next);
-      },
-      []
-    );
+  const clearTimers = useCallback(() => {
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    }
+    if (stepIntervalRef.current) {
+      clearInterval(stepIntervalRef.current);
+      stepIntervalRef.current = null;
+    }
+  }, []);
 
-  const clearTimers =
-    useCallback(() => {
+  const resetTranscriptState = useCallback(() => {
+    transcriptRef.current = "";
+    messagesRef.current = [];
+    callStartRef.current = null;
+    setMessages([]);
+    setDurationSeconds(0);
+  }, []);
+
+  const resetFullSession = useCallback(() => {
+    resetTranscriptState();
+    hasEvaluatedRef.current = false;
+    startInFlightRef.current = false;
+    endInFlightRef.current = false;
+    callStartedRef.current = false;
+    setEvaluation("");
+    setParsedEvaluation(null);
+    setError(null);
+    setAnalyzingStep(0);
+    setStats(null);
+  }, [resetTranscriptState]);
+
+  const startDurationTimer = useCallback(() => {
+    callStartRef.current = Date.now();
+
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+    }
+
+    durationIntervalRef.current = setInterval(() => {
+      if (!callStartRef.current) {
+        return;
+      }
+      setDurationSeconds(
+        Math.floor(
+          (Date.now() - callStartRef.current) / 1000
+        )
+      );
+    }, 1000);
+  }, []);
+
+  const runAnalyzingSteps = useCallback(() => {
+    setAnalyzingStep(0);
+    if (stepIntervalRef.current) {
+      clearInterval(stepIntervalRef.current);
+    }
+    stepIntervalRef.current = setInterval(() => {
+      setAnalyzingStep((prev) =>
+        prev < ANALYZING_STEPS.length - 1 ? prev + 1 : prev
+      );
+    }, 1400);
+  }, []);
+
+  const applyRuntimeError = useCallback(
+    (message: string) => {
       if (
-        durationIntervalRef.current
+        TERMINAL_PHASES.includes(phaseRef.current)
       ) {
-        clearInterval(
-          durationIntervalRef.current
-        );
-        durationIntervalRef.current =
-          null;
+        logVapi("warn", "error-after-terminal-phase", {
+          phase: phaseRef.current,
+          message,
+        });
+        return;
       }
 
-      if (
-        stepIntervalRef.current
-      ) {
-        clearInterval(
-          stepIntervalRef.current
-        );
-        stepIntervalRef.current =
-          null;
+      sessionManagerRef.current.clearConnectTimeout();
+      startInFlightRef.current = false;
+      callStartedRef.current = false;
+      setPhaseSafe("error");
+      setError(message);
+    },
+    [setPhaseSafe]
+  );
+
+  const fetchEvaluation = useCallback(
+    async (
+      rawTranscript: string,
+      meta?: {
+        durationSeconds?: number;
+        candidateWordCount?: number;
+        candidateTurns?: number;
+        candidateWordShare?: number;
+        lineCount?: number;
       }
-    }, []);
+    ) => {
+      const transcript = rawTranscript.trim();
 
-  const resetSession =
-    useCallback(() => {
-      transcriptRef.current = "";
-      messagesRef.current = [];
-      callStartRef.current = null;
-
-      hasEvaluatedRef.current =
-        false;
-      startInFlightRef.current =
-        false;
-      endInFlightRef.current =
-        false;
-
-      setMessages([]);
-      setEvaluation("");
-      setParsedEvaluation(null);
-      setError(null);
-      setDurationSeconds(0);
-      setAnalyzingStep(0);
-      setStats(null);
-    }, []);
-
-  const startDurationTimer =
-    useCallback(() => {
-      callStartRef.current =
-        Date.now();
-
-      if (
-        durationIntervalRef.current
-      ) {
-        clearInterval(
-          durationIntervalRef.current
-        );
+      if (!transcript) {
+        setPhaseSafe("error");
+        setError("No interview transcript was captured.");
+        setEvaluation("No transcript found after processing.");
+        endInFlightRef.current = false;
+        clearTimers();
+        return;
       }
 
-      durationIntervalRef.current =
-        setInterval(() => {
-          if (
-            !callStartRef.current
-          ) {
-            return;
-          }
-
-          setDurationSeconds(
-            Math.floor(
-              (Date.now() -
-                callStartRef.current) /
-                1000
-            )
+      try {
+        const { response, data } =
+          await fetchWithTimeout<EvaluateResponse>(
+            "/api/evaluate",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ transcript, meta }),
+              timeoutMs: EVALUATE_TIMEOUT_MS,
+            }
           );
-        }, 1000);
-    }, []);
 
-  const runAnalyzingSteps =
-    useCallback(() => {
-      setAnalyzingStep(0);
-
-      if (stepIntervalRef.current) {
-        clearInterval(
-          stepIntervalRef.current
-        );
-      }
-
-      stepIntervalRef.current =
-        setInterval(() => {
-          setAnalyzingStep(
-            (prev) =>
-              prev <
-              ANALYZING_STEPS.length -
-                1
-                ? prev + 1
-                : prev
-          );
-        }, 1400);
-    }, []);
-
-  const fetchEvaluation =
-    useCallback(
-      async (
-        rawTranscript: string,
-        meta?: {
-          durationSeconds?: number;
-          candidateWordCount?: number;
-          candidateTurns?: number;
-          candidateWordShare?: number;
-          lineCount?: number;
-        }
-      ) => {
-        const transcript =
-          rawTranscript.trim();
-
-        if (!transcript) {
-          setPhaseSafe("error");
-          setError(
-            "No interview transcript was captured."
-          );
-          setEvaluation(
-            "No transcript found after processing."
-          );
-          endInFlightRef.current =
-            false;
-          clearTimers();
+        if (!mountedRef.current) {
           return;
         }
 
-        try {
-          const {
-            response,
-            data,
-          } =
-            await fetchWithTimeout<EvaluateResponse>(
-              "/api/evaluate",
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type":
-                    "application/json",
-                },
-                body: JSON.stringify({
-                  transcript,
-                  meta,
-                }),
-                timeoutMs:
-                  EVALUATE_TIMEOUT_MS,
-              }
-            );
-
-          if (
-            !mountedRef.current
-          ) {
-            return;
-          }
-
-          if (
-            !response.ok ||
-            data.ok === false
-          ) {
-            setPhaseSafe("error");
-            setError(
-              data.error ??
-                "Evaluation failed."
-            );
-            setEvaluation(
-              data.evaluation ??
-                data.error ??
-                "Failed to generate evaluation."
-            );
-            return;
-          }
-
-          setEvaluation(
-            data.evaluation ?? ""
-          );
-          if (data.parsed) {
-            setParsedEvaluation(
-              data.parsed
-            );
-          }
-          setPhaseSafe("complete");
-        } catch (err) {
-          if (
-            !mountedRef.current
-          ) {
-            return;
-          }
-
+        if (!response.ok || data.ok === false) {
           setPhaseSafe("error");
-
-          if (
-            err instanceof
-            FetchTimeoutError
-          ) {
-            setError(
-              "Evaluation timed out. Please try again."
-            );
-            setEvaluation(
-              "The AI recruiter took too long to respond. Please retry."
-            );
-          } else {
-            setError(
-              "Network error while generating evaluation."
-            );
-            setEvaluation(
-              "Failed to generate evaluation. Check your connection."
-            );
-          }
-        } finally {
-          endInFlightRef.current =
-            false;
-          clearTimers();
+          setError(data.error ?? "Evaluation failed.");
+          setEvaluation(
+            data.evaluation ??
+              data.error ??
+              "Failed to generate evaluation."
+          );
+          return;
         }
-      },
-      [clearTimers, setPhaseSafe]
-    );
+
+        setEvaluation(data.evaluation ?? "");
+        if (data.parsed) {
+          setParsedEvaluation(data.parsed);
+        }
+        setPhaseSafe("complete");
+      } catch (err) {
+        if (!mountedRef.current) {
+          return;
+        }
+
+        setPhaseSafe("error");
+
+        if (err instanceof FetchTimeoutError) {
+          setError(
+            "Evaluation timed out. Please try again."
+          );
+          setEvaluation(
+            "The AI recruiter took too long to respond. Please retry."
+          );
+        } else {
+          setError(
+            "Network error while generating evaluation."
+          );
+          setEvaluation(
+            "Failed to generate evaluation. Check your connection."
+          );
+        }
+      } finally {
+        endInFlightRef.current = false;
+        clearTimers();
+      }
+    },
+    [clearTimers, setPhaseSafe]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
+    const manager = sessionManagerRef.current;
+    manager.mount();
 
-    const publicKey =
-      process.env
-        .NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+    const config = validateVapiConfig();
 
-    if (!publicKey) {
-      setError(
-        "VAPI public key is not configured."
-      );
+    logVapi("info", "config-check", {
+      hasPublicKey: Boolean(config.publicKey),
+      hasAssistantId: Boolean(config.assistantId),
+      valid: config.ok,
+    });
+
+    if (!config.ok) {
+      const message = config.errors.join(" ");
+      setConfigError(message);
+      setError(message);
       setPhaseSafe("error");
-      return;
+
+      return () => {
+        mountedRef.current = false;
+        clearTimers();
+        manager.unmount();
+      };
     }
 
-    const vapiInstance =
-      new Vapi(publicKey);
-    vapiRef.current =
-      vapiInstance;
+    setConfigError(null);
 
-    const handleCallStart = () => {
-      startInFlightRef.current =
-        false;
-      endInFlightRef.current =
-        false;
-      hasEvaluatedRef.current =
-        false;
+    let cancelled = false;
 
-      resetSession();
-      setPhaseSafe("active");
-      startDurationTimer();
-    };
-
-    const handleMessage = (
-      message: Record<
-        string,
-        unknown
-      >
-    ) => {
-      if (
-        message.type !==
-        "transcript"
-      ) {
-        return;
-      }
-      if (
-        phaseRef.current !== "active"
-      ) {
-        return;
-      }
-      if (endInFlightRef.current) {
-        return;
-      }
-
-      const text = String(
-        message.transcript ??
-          message.text ??
-          ""
-      ).trim();
-
-      if (
-        !text ||
-        text.length <
-          MIN_TRANSCRIPT_CHUNK_LENGTH
-      ) {
-        return;
-      }
-
-      const role = String(
-        message.role ??
-          "Speaker"
-      );
-
-      const previousTranscript =
-        transcriptRef.current;
-      const previousLineCount =
-        previousTranscript
-          .split("\n")
-          .filter(Boolean).length;
-
-      const merged =
-        mergeTranscriptLine(
-          previousTranscript,
-          text
-        );
-      const nextLineCount =
-        merged
-          .split("\n")
-          .filter(Boolean).length;
-
-      const isPartialUpdate =
-        nextLineCount ===
-          previousLineCount &&
-        previousLineCount > 0;
-
-      transcriptRef.current = merged;
-
-      setMessages(
-        (prevMessages) => {
-          let nextMessages: TranscriptMessage[];
-
-          if (
-            isPartialUpdate &&
-            prevMessages.length > 0
-          ) {
-            nextMessages = [
-              ...prevMessages,
-            ];
-            nextMessages[
-              nextMessages.length - 1
-            ] = {
-              ...nextMessages[
-                nextMessages.length - 1
-              ],
-              transcript: text,
-            };
-          } else {
-            nextMessages = [
-              ...prevMessages,
-              {
-                id: createMessageId(),
-                role,
-                transcript: text,
-                timestamp:
-                  Date.now(),
-              },
-            ];
-          }
-
-          messagesRef.current =
-            nextMessages;
-          return nextMessages;
+    void manager
+      .ensureClient(config.publicKey)
+      .then((client) => {
+        if (cancelled || !mountedRef.current) {
+          return;
         }
-      );
-    };
 
-    const handleCallEnd = () => {
-      startInFlightRef.current =
-        false;
-      if (endInFlightRef.current) {
-        return;
-      }
-      if (
-        phaseRef.current === "active"
-      ) {
-        clearTimers();
-        setPhaseSafe("idle");
-      }
-    };
-
-    vapiInstance.on(
-      "call-start",
-      handleCallStart
-    );
-    vapiInstance.on(
-      "message",
-      handleMessage
-    );
-    vapiInstance.on(
-      "call-end",
-      handleCallEnd
-    );
-
-    return () => {
-      mountedRef.current = false;
-      clearTimers();
-
-      try {
-        const startListener =
-          handleCallStart as unknown as (
-            ...args: unknown[]
-          ) => void;
-        const messageListener =
-          handleMessage as unknown as (
-            ...args: unknown[]
-          ) => void;
-        const endListener =
-          handleCallEnd as unknown as (
-            ...args: unknown[]
-          ) => void;
-
-        const candidate =
-          vapiInstance as unknown as {
-            off?: (
-              event: string,
-              listener: (...args: unknown[]) => void
-            ) => void;
-            removeListener?: (
-              event: string,
-              listener: (...args: unknown[]) => void
-            ) => void;
-          };
-
-        candidate.off?.(
-          "call-start",
-          startListener
-        );
-        candidate.off?.(
-          "message",
-          messageListener
-        );
-        candidate.off?.(
-          "call-end",
-          endListener
-        );
-
-        candidate.removeListener?.(
-          "call-start",
-          startListener
-        );
-        candidate.removeListener?.(
-          "message",
-          messageListener
-        );
-        candidate.removeListener?.(
-          "call-end",
-          endListener
-        );
-      } catch {}
-
-      scheduleIdleTask(() => {
-        try {
-          const result =
-            vapiInstance.stop();
-          if (
-            result &&
-            typeof (
-              result as Promise<unknown>
-            ).catch === "function"
-          ) {
-            void (
-              result as Promise<unknown>
-            ).catch((err) => {
-              if (
-                !isHarmlessTeardownError(
-                  err
-                )
-              ) {
-                console.warn(
-                  "VAPI cleanup stop error:",
-                  err
-                );
-              }
-            });
+        const handleCallStart = () => {
+          if (callStartedRef.current) {
+            logVapi("warn", "duplicate-call-start-ignored");
+            return;
           }
-        } catch (err) {
+
+          callStartedRef.current = true;
+          manager.clearConnectTimeout();
+          startInFlightRef.current = false;
+          endInFlightRef.current = false;
+          hasEvaluatedRef.current = false;
+          resetTranscriptState();
+          setError(null);
+          setPhaseSafe("active");
+          startDurationTimer();
+          logVapi("info", "call-start");
+        };
+
+        const handleMessage = (
+          message: Record<string, unknown>
+        ) => {
+          if (message.type !== "transcript") {
+            return;
+          }
           if (
-            !isHarmlessTeardownError(
-              err
-            )
+            phaseRef.current !== "active" ||
+            endInFlightRef.current
           ) {
-            console.warn(
-              "VAPI cleanup sync stop error:",
-              err
+            return;
+          }
+
+          const text = String(
+            message.transcript ?? message.text ?? ""
+          ).trim();
+
+          if (
+            !text ||
+            text.length < MIN_TRANSCRIPT_CHUNK_LENGTH
+          ) {
+            return;
+          }
+
+          const role = String(message.role ?? "Speaker");
+          const previousTranscript =
+            transcriptRef.current;
+          const previousLineCount = previousTranscript
+            .split("\n")
+            .filter(Boolean).length;
+          const merged = mergeTranscriptLine(
+            previousTranscript,
+            text
+          );
+          const nextLineCount = merged
+            .split("\n")
+            .filter(Boolean).length;
+          const isPartialUpdate =
+            nextLineCount === previousLineCount &&
+            previousLineCount > 0;
+
+          transcriptRef.current = merged;
+
+          setMessages((prevMessages) => {
+            let nextMessages: TranscriptMessage[];
+
+            if (
+              isPartialUpdate &&
+              prevMessages.length > 0
+            ) {
+              nextMessages = [...prevMessages];
+              nextMessages[nextMessages.length - 1] = {
+                ...nextMessages[nextMessages.length - 1],
+                transcript: text,
+              };
+            } else {
+              nextMessages = [
+                ...prevMessages,
+                {
+                  id: createMessageId(),
+                  role,
+                  transcript: text,
+                  timestamp: Date.now(),
+                },
+              ];
+            }
+
+            messagesRef.current = nextMessages;
+            return nextMessages;
+          });
+        };
+
+        const handleCallEnd = () => {
+          logVapi("info", "call-end", {
+            phase: phaseRef.current,
+          });
+
+          manager.clearConnectTimeout();
+          startInFlightRef.current = false;
+          callStartedRef.current = false;
+
+          if (endInFlightRef.current) {
+            return;
+          }
+
+          const currentPhase = phaseRef.current;
+
+          if (currentPhase === "connecting") {
+            clearTimers();
+            setPhaseSafe("error");
+            setError(
+              "The voice session ended before connecting. Check your Vapi keys and microphone, then try again."
+            );
+            return;
+          }
+
+          if (currentPhase === "active") {
+            clearTimers();
+            setPhaseSafe("idle");
+            setError(
+              "The interview ended unexpectedly. Start a new session or use End & analyze before disconnecting."
             );
           }
+        };
+
+        const handleError = (vapiError: unknown) => {
+          const message = formatVapiError(vapiError);
+
+          if (isNormalCallTermination(message)) {
+            logVapi("info", "normal-call-end", { message });
+            return;
+          }
+
+          if (
+            TERMINAL_PHASES.includes(phaseRef.current) ||
+            endInFlightRef.current
+          ) {
+            logVapi("warn", "ignored-teardown-error", {
+              phase: phaseRef.current,
+              message,
+            });
+            return;
+          }
+
+          logVapi("error", "runtime-error", {
+            message,
+            raw: vapiError,
+          });
+
+          applyRuntimeError(message);
+        };
+
+        const handleCallStartFailed = (
+          event: unknown
+        ) => {
+          const detail =
+            extractVapiFailureMessage(event) ??
+            "Call failed to start. Verify your assistant is published and API keys are correct.";
+          logVapi("error", "call-start-failed", {
+            event,
+            detail,
+          });
+          applyRuntimeError(
+            formatVapiError(new Error(detail))
+          );
+        };
+
+        manager.attachHandlers({
+          onCallStart: handleCallStart,
+          onMessage: handleMessage,
+          onCallEnd: handleCallEnd,
+          onError: handleError,
+          onCallStartFailed: handleCallStartFailed,
+        });
+
+        logVapi("info", "handlers-attached", {
+          clientReady: Boolean(client),
+        });
+      })
+      .catch((err) => {
+        if (!mountedRef.current) {
+          return;
         }
+        const message = formatVapiError(err);
+        setConfigError(message);
+        applyRuntimeError(message);
       });
 
-      vapiRef.current =
-        null;
+    return () => {
+      cancelled = true;
+      mountedRef.current = false;
+      clearTimers();
+      manager.unmount();
     };
   }, [
+    applyRuntimeError,
     clearTimers,
-    resetSession,
+    resetTranscriptState,
     setPhaseSafe,
     startDurationTimer,
   ]);
 
-  const startCall =
-    useCallback(async () => {
-      if (!vapiRef.current) {
-        return;
-      }
-      if (
-        startInFlightRef.current
-      ) {
-        return;
-      }
+  const startCall = useCallback(async () => {
+    const config = validateVapiConfig();
 
-      const current =
-        phaseRef.current;
-      if (
-        current === "connecting" ||
-        current === "active" ||
-        current === "processing"
-      ) {
-        return;
-      }
-
-      startInFlightRef.current =
-        true;
-      setError(null);
-      setPhaseSafe("connecting");
-
-      try {
-        await vapiRef.current.start(
-          VAPI_ASSISTANT_ID
-        );
-      } catch (err) {
-        startInFlightRef.current =
-          false;
-        setPhaseSafe("error");
-        setError(
-          "Could not start the interview call."
-        );
-        console.error(err);
-      }
-    }, [setPhaseSafe]);
-
-  const endCall = useCallback(() => {
-    if (!vapiRef.current) {
+    if (!config.ok) {
+      setPhaseSafe("error");
+      setError(config.errors.join(" "));
       return;
     }
-    if (endInFlightRef.current) {
+
+    const manager = sessionManagerRef.current;
+
+    if (!manager.isClientReady()) {
+      setPhaseSafe("error");
+      setError(
+        configError ??
+          "Voice client is still initializing. Wait a moment and try again."
+      );
       return;
     }
+
+    if (startInFlightRef.current) {
+      return;
+    }
+
+    const current = phaseRef.current;
     if (
-      phaseRef.current !== "active"
+      current === "connecting" ||
+      current === "active" ||
+      current === "processing"
     ) {
       return;
     }
+
+    startInFlightRef.current = true;
+    callStartedRef.current = false;
+    setError(null);
+    setPhaseSafe("connecting");
+
+    const { assistantId } = getVapiEnv();
+
+    manager.beginConnectTimeout(() => {
+      if (callStartedRef.current) {
+        return;
+      }
+      logVapi("error", "connect-timeout");
+      void manager.stopCall("connect-timeout");
+      applyRuntimeError(
+        "Connecting timed out. Refresh the page, confirm Vapi credentials, and use http://localhost:3000."
+      );
+    });
+
+    try {
+      logVapi("info", "start-requested", {
+        assistantId,
+        publicKeyPrefix: config.publicKey.slice(0, 8),
+      });
+
+      await manager.startCall(assistantId);
+      logVapi("info", "start-invoked");
+    } catch (err) {
+      manager.clearConnectTimeout();
+      const message = formatVapiError(err);
+      logVapi("error", "start-failed", { message, error: err });
+      startInFlightRef.current = false;
+      await manager.stopCall("start-failed");
+      applyRuntimeError(message);
+    }
+  }, [applyRuntimeError, configError, setPhaseSafe]);
+
+  const endCall = useCallback(() => {
+    const manager = sessionManagerRef.current;
+
+    if (!manager.isClientReady()) {
+      return;
+    }
+
+    if (endInFlightRef.current) {
+      return;
+    }
+
+    if (phaseRef.current !== "active") {
+      return;
+    }
+
     if (hasEvaluatedRef.current) {
       return;
     }
 
     endInFlightRef.current = true;
     hasEvaluatedRef.current = true;
-
+    manager.clearConnectTimeout();
     clearTimers();
 
-    const finalDuration =
-      callStartRef.current
-        ? Math.floor(
-            (Date.now() -
-              callStartRef.current) /
-              1000
-          )
-        : durationSeconds;
+    const finalDuration = callStartRef.current
+      ? Math.floor(
+          (Date.now() - callStartRef.current) / 1000
+        )
+      : durationSeconds;
 
-    const transcriptSnapshot =
-      transcriptRef.current;
-    const statsSnapshot =
-      computeTranscriptStats(
-        messagesRef.current,
-        finalDuration
-      );
-
-    setDurationSeconds(
+    const transcriptSnapshot = transcriptRef.current;
+    const statsSnapshot = computeTranscriptStats(
+      messagesRef.current,
       finalDuration
     );
+
+    setDurationSeconds(finalDuration);
     setStats(statsSnapshot);
     setPhaseSafe("processing");
     runAnalyzingSteps();
 
-    void fetchEvaluation(
-      transcriptSnapshot,
-      {
-        durationSeconds:
-          finalDuration,
-        candidateWordCount:
-          Math.round(
-            statsSnapshot.wordCount *
-              (statsSnapshot.candidateWordShare /
-                100)
-          ),
-        candidateTurns:
-          statsSnapshot.candidateTurns,
-        candidateWordShare:
-          statsSnapshot.candidateWordShare,
-        lineCount:
-          statsSnapshot.lineCount,
-      }
-    );
-
-    const instance = vapiRef.current;
-    scheduleIdleTask(() => {
-      try {
-        const result =
-          instance.stop();
-        if (
-          result &&
-          typeof (
-            result as Promise<unknown>
-          ).catch === "function"
-        ) {
-          void (
-            result as Promise<unknown>
-          ).catch((err) => {
-            if (
-              !isHarmlessTeardownError(
-                err
-              )
-            ) {
-              console.warn(
-                "VAPI async stop error:",
-                err
-              );
-            }
-          });
-        }
-      } catch (err) {
-        if (
-          !isHarmlessTeardownError(
-            err
-          )
-        ) {
-          console.warn(
-            "VAPI stop error:",
-            err
-          );
-        }
-      }
+    void fetchEvaluation(transcriptSnapshot, {
+      durationSeconds: finalDuration,
+      candidateWordCount: Math.round(
+        statsSnapshot.wordCount *
+          (statsSnapshot.candidateWordShare / 100)
+      ),
+      candidateTurns: statsSnapshot.candidateTurns,
+      candidateWordShare: statsSnapshot.candidateWordShare,
+      lineCount: statsSnapshot.lineCount,
     });
+
+    void manager.stopCall("user-end");
   }, [
     clearTimers,
     durationSeconds,
@@ -780,57 +653,45 @@ export function useVapiInterview() {
     setPhaseSafe,
   ]);
 
-  const retryEvaluation =
-    useCallback(async () => {
-      if (
-        !transcriptRef.current.trim()
-      ) {
-        setError(
-          "No transcript available to re-evaluate."
-        );
-        return;
-      }
+  const retryEvaluation = useCallback(async () => {
+    if (!transcriptRef.current.trim()) {
+      setError("No transcript available to re-evaluate.");
+      return;
+    }
 
-      clearTimers();
-      setError(null);
-      setEvaluation("");
-      setParsedEvaluation(null);
-      setPhaseSafe("processing");
-      runAnalyzingSteps();
+    clearTimers();
+    setError(null);
+    setEvaluation("");
+    setParsedEvaluation(null);
+    setPhaseSafe("processing");
+    runAnalyzingSteps();
+    endInFlightRef.current = true;
 
-      endInFlightRef.current = true;
-      await fetchEvaluation(
-        transcriptRef.current,
-        stats
-          ? {
-              durationSeconds:
-                stats.durationSeconds,
-              candidateWordCount:
-                Math.round(
-                  stats.wordCount *
-                    (stats.candidateWordShare /
-                      100)
-                ),
-              candidateTurns:
-                stats.candidateTurns,
-              candidateWordShare:
-                stats.candidateWordShare,
-              lineCount:
-                stats.lineCount,
-            }
-          : undefined
-      );
-    }, [
-      clearTimers,
-      fetchEvaluation,
-      runAnalyzingSteps,
-      setPhaseSafe,
-      stats,
-    ]);
+    await fetchEvaluation(
+      transcriptRef.current,
+      stats
+        ? {
+            durationSeconds: stats.durationSeconds,
+            candidateWordCount: Math.round(
+              stats.wordCount *
+                (stats.candidateWordShare / 100)
+            ),
+            candidateTurns: stats.candidateTurns,
+            candidateWordShare: stats.candidateWordShare,
+            lineCount: stats.lineCount,
+          }
+        : undefined
+    );
+  }, [
+    clearTimers,
+    fetchEvaluation,
+    runAnalyzingSteps,
+    setPhaseSafe,
+    stats,
+  ]);
 
   const isCallActive =
-    phase === "active" ||
-    phase === "connecting";
+    phase === "active" || phase === "connecting";
 
   return {
     phase,
@@ -840,8 +701,7 @@ export function useVapiInterview() {
     error,
     durationSeconds,
     analyzingStep,
-    analyzingSteps:
-      ANALYZING_STEPS,
+    analyzingSteps: ANALYZING_STEPS,
     stats,
     isCallActive,
     startCall,
