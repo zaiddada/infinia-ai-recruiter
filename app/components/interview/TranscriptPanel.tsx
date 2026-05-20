@@ -1,77 +1,149 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { TranscriptMessage } from "@/app/types/interview";
+interface TranscriptPanelProps {
+  messages: any[];
+  isLive?: boolean;
+}
 
 export function TranscriptPanel({
   messages,
   isLive,
-}: {
-  messages: TranscriptMessage[];
-  isLive: boolean;
-}) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+}: TranscriptPanelProps) {
+  const scrollRef =
+    useRef<HTMLDivElement | null>(null);
 
+  const [shouldAutoScroll, setShouldAutoScroll] =
+    useState(true);
+
+  // Detect if user manually scrolled up
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const container = scrollRef.current;
+
+    if (!container) return;
+
+    const handleScroll = () => {
+      const threshold = 120;
+
+      const isNearBottom =
+        container.scrollHeight -
+          container.scrollTop -
+          container.clientHeight <
+        threshold;
+
+      setShouldAutoScroll(isNearBottom);
+    };
+
+    container.addEventListener(
+      "scroll",
+      handleScroll
+    );
+
+    return () => {
+      container.removeEventListener(
+        "scroll",
+        handleScroll
+      );
+    };
+  }, []);
+
+  // Auto scroll ONLY if user is near bottom
+  useEffect(() => {
+    if (!shouldAutoScroll) return;
+
+    const container = scrollRef.current;
+
+    if (!container) return;
+
+    container.scrollTop =
+      container.scrollHeight;
+  }, [messages, shouldAutoScroll]);
 
   return (
-    <div className="flex h-full min-h-[320px] flex-col lg:min-h-[560px]">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight text-white">
-            Live transcript
-          </h2>
-          <p className="text-xs text-zinc-500">
-            Real-time capture · deduplicated for accuracy
-          </p>
-        </div>
-        {isLive && (
-          <span className="flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-medium text-red-300">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
-            </span>
-            Recording
-          </span>
-        )}
-      </div>
+    <div className="relative flex h-full flex-col">
 
-      <div className="custom-scrollbar flex-1 space-y-3 overflow-y-auto pr-1">
-        {messages.length === 0 ? (
-          <div className="flex h-48 flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center">
-            <p className="text-sm text-zinc-400">
-              When the interview starts, each turn appears here with speaker
-              attribution.
+      {/* HEADER */}
+      <div className="border-b border-white/10 pb-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold">
+              Live transcript
+            </h2>
+
+            <p className="text-sm text-zinc-500 mt-1">
+              Real-time capture · deduplicated
+              for accuracy
             </p>
           </div>
+
+          {isLive && (
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+
+              <span className="text-xs text-emerald-400">
+                LIVE
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* SCROLLABLE MESSAGES */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto min-h-0 pr-2 space-y-4"
+      >
+        {messages.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-zinc-500">
+            Transcript will appear here...
+          </div>
         ) : (
-          messages.map((msg) => (
+          messages.map((msg, index) => (
             <div
-              key={msg.id}
-              className="rounded-xl border border-white/[0.06] bg-black/40 p-4 transition hover:border-white/10"
+              key={index}
+              className="rounded-2xl border border-white/10 bg-black/30 p-4"
             >
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-xs font-medium uppercase tracking-wide text-emerald-400/90">
-                  {msg.role}
-                </span>
-                <span className="text-[10px] text-zinc-600">
-                  {new Date(msg.timestamp).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wide text-emerald-400">
+                  {msg.role || "speaker"}
+                </p>
+
+                <p className="text-xs text-zinc-500">
+                  {msg.timestamp || ""}
+                </p>
               </div>
-              <p className="text-sm leading-relaxed text-zinc-300">
-                {msg.transcript}
+
+              <p className="text-sm leading-relaxed text-zinc-200">
+                {msg.transcript || msg.text}
               </p>
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
+
+      {/* NEW MESSAGES BUTTON */}
+      {!shouldAutoScroll && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2">
+          <button
+            onClick={() => {
+              const container =
+                scrollRef.current;
+
+              if (!container) return;
+
+              container.scrollTop =
+                container.scrollHeight;
+
+              setShouldAutoScroll(true);
+            }}
+            className="rounded-full border border-white/10 bg-zinc-900/90 px-4 py-2 text-sm text-white shadow-lg backdrop-blur"
+          >
+            ↓ New messages
+          </button>
+        </div>
+      )}
+
     </div>
   );
 }
