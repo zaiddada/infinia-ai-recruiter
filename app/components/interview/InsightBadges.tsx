@@ -5,6 +5,19 @@ export function InsightBadges({
 }: {
   parsed: ParsedEvaluation | null;
 }) {
+  if (parsed?.status === "insufficient_data") {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200">
+          Insufficient data
+        </span>
+        <span className="rounded-full border border-zinc-500/25 bg-zinc-500/10 px-3 py-1 text-xs font-medium text-zinc-300">
+          Confidence: low
+        </span>
+      </div>
+    );
+  }
+
   const rec = parsed?.hiringRecommendation ?? "";
   const tone =
     /strong yes/i.test(rec)

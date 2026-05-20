@@ -242,7 +242,14 @@ export function useVapiInterview() {
   const fetchEvaluation =
     useCallback(
       async (
-        rawTranscript: string
+        rawTranscript: string,
+        meta?: {
+          durationSeconds?: number;
+          candidateWordCount?: number;
+          candidateTurns?: number;
+          candidateWordShare?: number;
+          lineCount?: number;
+        }
       ) => {
         const transcript =
           rawTranscript.trim();
@@ -276,6 +283,7 @@ export function useVapiInterview() {
                 },
                 body: JSON.stringify({
                   transcript,
+                  meta,
                 }),
                 timeoutMs:
                   EVALUATE_TIMEOUT_MS,
@@ -706,7 +714,23 @@ export function useVapiInterview() {
     runAnalyzingSteps();
 
     void fetchEvaluation(
-      transcriptSnapshot
+      transcriptSnapshot,
+      {
+        durationSeconds:
+          finalDuration,
+        candidateWordCount:
+          Math.round(
+            statsSnapshot.wordCount *
+              (statsSnapshot.candidateWordShare /
+                100)
+          ),
+        candidateTurns:
+          statsSnapshot.candidateTurns,
+        candidateWordShare:
+          statsSnapshot.candidateWordShare,
+        lineCount:
+          statsSnapshot.lineCount,
+      }
     );
 
     const instance = vapiRef.current;
@@ -776,13 +800,32 @@ export function useVapiInterview() {
 
       endInFlightRef.current = true;
       await fetchEvaluation(
-        transcriptRef.current
+        transcriptRef.current,
+        stats
+          ? {
+              durationSeconds:
+                stats.durationSeconds,
+              candidateWordCount:
+                Math.round(
+                  stats.wordCount *
+                    (stats.candidateWordShare /
+                      100)
+                ),
+              candidateTurns:
+                stats.candidateTurns,
+              candidateWordShare:
+                stats.candidateWordShare,
+              lineCount:
+                stats.lineCount,
+            }
+          : undefined
       );
     }, [
       clearTimers,
       fetchEvaluation,
       runAnalyzingSteps,
       setPhaseSafe,
+      stats,
     ]);
 
   const isCallActive =

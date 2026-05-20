@@ -15,6 +15,7 @@ import { ProcessingPanel } from "@/app/components/interview/ProcessingPanel";
 
 import { TranscriptPanel } from "@/app/components/interview/TranscriptPanel";
 
+import { downloadTranscript } from "@/app/lib/exportTranscript";
 import { useVapiInterview } from "@/app/hooks/useVapiInterview";
 
 export default function Home() {
@@ -214,41 +215,48 @@ export default function Home() {
 
                 </div>
 
-                <div className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-zinc-400">
+                <div className="flex items-center gap-2">
+                  {messages.length > 0 && phase !== "processing" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadTranscript(
+                          messages,
+                          durationSeconds
+                        )
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/10 hover:text-white"
+                    >
+                      Download transcript
+                    </button>
+                  )}
 
-                  {
-                    messages.length
-                  }{" "}
-                  messages
-
+                  <div className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-zinc-400">
+                    {messages.length} messages
+                  </div>
                 </div>
 
               </div>
 
-              {/* SCROLLABLE CONTENT */}
-              <div className="flex-1 overflow-y-auto pr-2">
+              {/* Transcript body — single scroll owner via min-h-0 flex chain */}
+              <div className="min-h-0 flex-1 overflow-hidden">
 
-                {phase ===
-                "processing" ? (
-                  <ProcessingPanel
-                    stepIndex={
-                      analyzingStep
-                    }
-                    steps={
-                      analyzingSteps
-                    }
-                    stats={stats}
-                  />
+                {phase === "processing" ? (
+                  <div className="custom-scrollbar h-full overflow-y-auto pr-2">
+                    <ProcessingPanel
+                      stepIndex={analyzingStep}
+                      steps={analyzingSteps}
+                      stats={stats}
+                    />
+                  </div>
                 ) : (
                   <TranscriptPanel
-                    messages={
-                      messages
-                    }
+                    messages={messages}
                     isLive={
-                      transcriptLive &&
-                      phase !==
-                        "idle"
+                      transcriptLive && phase !== "idle"
                     }
+                    durationSeconds={durationSeconds}
+                    showHeader={false}
                   />
                 )}
 

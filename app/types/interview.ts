@@ -23,6 +23,14 @@ export type EvaluationScores = {
 };
 
 export type ParsedEvaluation = {
+  status?: "sufficient_data" | "insufficient_data";
+  confidence?: "low" | "medium" | "high";
+  transcriptSufficiency?: "low" | "medium" | "high";
+  evidenceCoverage?: number;
+  uncertaintyIndicators?: string[];
+  message?: string;
+  recommendedAction?: string;
+  observedFacts?: string[];
   overview: string;
   scores: EvaluationScores;
   keyObservations: string[];

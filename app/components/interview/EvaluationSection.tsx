@@ -34,6 +34,8 @@ export function EvaluationSection({
   );
 
   const confidence = computeInsightConfidence(stats, scoresParsed);
+  const systemConfidence = parsed?.confidence ?? confidence.level;
+  const systemCoverage = parsed?.evidenceCoverage ?? confidence.percent;
 
   if (!evaluation && !error) return null;
 
@@ -73,6 +75,29 @@ export function EvaluationSection({
 
       {parsed && <InsightBadges parsed={parsed} />}
 
+      {parsed?.status === "insufficient_data" && (
+        <div className="mt-6 rounded-xl border border-amber-400/30 bg-amber-500/10 p-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-200">
+            Insufficient interview signal
+          </h3>
+          <p className="mt-2 text-sm text-amber-50/90">
+            {parsed.message || "Interview too short for reliable evaluation."}
+          </p>
+          {parsed.recommendedAction && (
+            <p className="mt-2 text-xs text-amber-100/80">
+              Recommended action: {parsed.recommendedAction}
+            </p>
+          )}
+          {parsed.observedFacts && parsed.observedFacts.length > 0 && (
+            <ul className="mt-3 space-y-1 text-xs text-amber-100/85">
+              {parsed.observedFacts.map((fact) => (
+                <li key={fact}>- {fact}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {stats && (
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatPill label="Words" value={String(stats.wordCount)} />
@@ -102,19 +127,23 @@ export function EvaluationSection({
                   : "text-zinc-400"
             }`}
           >
-            {confidence.level}
+            {systemConfidence}
           </span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-all duration-700"
-            style={{ width: `${confidence.percent}%` }}
+            style={{ width: `${systemCoverage}%` }}
           />
         </div>
-        <p className="mt-2 text-xs text-zinc-500">{confidence.label}</p>
+        <p className="mt-2 text-xs text-zinc-500">
+          {parsed?.status === "insufficient_data"
+            ? "Low-confidence output. Detailed recruiter scoring is intentionally suppressed."
+            : confidence.label}
+        </p>
       </div>
 
-      {parsed && (
+      {parsed && parsed.status !== "insufficient_data" && (
         <div className="mt-8 space-y-8">
           <div>
             <h3 className="mb-3 text-sm font-medium text-zinc-400">

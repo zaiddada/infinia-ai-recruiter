@@ -56,6 +56,36 @@ function parseBulletList(text: string): string[] {
 }
 
 export function parseEvaluation(markdown: string): ParsedEvaluation {
+  const trimmed = markdown.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const json = JSON.parse(trimmed) as Partial<ParsedEvaluation> & {
+        scores?: EvaluationScores;
+      };
+      return {
+        status: json.status,
+        confidence: json.confidence,
+        transcriptSufficiency: json.transcriptSufficiency,
+        evidenceCoverage: json.evidenceCoverage,
+        uncertaintyIndicators: json.uncertaintyIndicators ?? [],
+        message: json.message,
+        recommendedAction: json.recommendedAction,
+        observedFacts: json.observedFacts ?? [],
+        overview: json.overview ?? "",
+        scores: json.scores ?? {},
+        keyObservations: json.keyObservations ?? [],
+        growthPotential: json.growthPotential ?? "",
+        cultureFit: json.cultureFit ?? "",
+        hiringRecommendation: json.hiringRecommendation ?? "",
+        recruiterSummary: json.recruiterSummary ?? "",
+        coachingSuggestions: json.coachingSuggestions ?? [],
+        rawMarkdown: markdown,
+      };
+    } catch {
+      // fallback to markdown parser below
+    }
+  }
+
   const scoresSection =
     extractSection(markdown, "Scores") || markdown;
   const tableScores = parseTableScores(scoresSection);
