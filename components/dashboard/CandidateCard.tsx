@@ -168,11 +168,15 @@ export function CandidateCard({
 
         <div className="mt-6 flex items-center justify-between border-t border-white/5 pt-4">
           <p className="text-xs text-zinc-500">
-            {candidate.created_at
-              ? new Date(
-                  candidate.created_at
-                ).toLocaleString()
-              : "No date available"}
+          {
+  candidate.created_at
+    ? new Date(
+        candidate.created_at
+      ).toISOString()
+      .replace("T", " ")
+      .slice(0, 19)
+    : "No date available"
+}
           </p>
 
           <button
