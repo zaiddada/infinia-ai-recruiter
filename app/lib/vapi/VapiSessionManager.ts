@@ -252,8 +252,8 @@ export class VapiSessionManager {
       return;
     }
 
-    this.client.on(
-      event as never,
+    (this.client.on as any)(
+      event,
       listener
     );
   }
