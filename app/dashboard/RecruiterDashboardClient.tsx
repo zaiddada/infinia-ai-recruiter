@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { CandidateCard } from "@/components/dashboard/CandidateCard";
-import { DashboardControls } from "@/components/dashboard/DashboardControls";
+import { DashboardControls } from "@/app/dashboard/DashboardControls";
 
 type Props = {
   candidates: any[];
