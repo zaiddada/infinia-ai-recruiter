@@ -19,7 +19,7 @@ export function ScoreCards({ scores }: { scores: EvaluationScores }) {
       {SCORE_ITEMS.map(({ key, label, hint }) => {
         const value = scores[key];
         const display =
-          value !== undefined ? `${value}/10` : "—";
+          value !== undefined ? `${value}/100` : "—";
         return (
           <div
             key={key}

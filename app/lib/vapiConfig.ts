@@ -204,3 +204,17 @@ export function logVapi(
 
   logFn("[Vapi]", JSON.stringify(payload, null, 2));
 }
+export async function requestMicrophoneAccess(): Promise<boolean> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    });
+
+    stream.getTracks().forEach((track) => track.stop());
+
+    return true;
+  } catch (error) {
+    console.error("[Vapi] microphone permission failed", error);
+    return false;
+  }
+}

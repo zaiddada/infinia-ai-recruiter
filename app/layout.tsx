@@ -3,6 +3,9 @@ import type { Metadata } from "next";
 import { ClientShell } from "@/app/providers/ClientShell";
 
 import "./globals.css";
+import { Geist } from "next/font/google";
+
+const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
 export const metadata: Metadata = {
   title: "Infinia — AI Voice Recruiter",

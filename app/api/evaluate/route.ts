@@ -20,6 +20,7 @@ export const runtime = "nodejs";
 
 const RequestSchema = z.object({
   transcript: z.string().min(1),
+
   meta: z
     .object({
       durationSeconds: z.number().optional(),
@@ -66,9 +67,7 @@ function normalizeText(
   value: unknown,
   fallback = ""
 ): string {
-  if (
-    typeof value !== "string"
-  ) {
+  if (typeof value !== "string") {
     return fallback;
   }
 
@@ -87,34 +86,26 @@ function clamp(
 }
 
 function calculateDeterministicScore(
-  // Route-internal Gemini JSON is loosely typed before parseEvaluation normalizes it.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parsed: any,
   validation: ReturnType<
     typeof validateTranscriptForEvaluation
   >
 ) {
-  const communication =
-    Number(
-      parsed?.scores
-        ?.communication ?? 0
-    );
+  const communication = Number(
+    parsed?.scores?.communication ?? 0
+  );
 
-  const technical =
-    Number(
-      parsed?.scores?.technical ??
-        0
-    );
+  const technical = Number(
+    parsed?.scores?.technical ?? 0
+  );
 
-  const behavioral =
-    Number(
-      parsed?.scores
-        ?.behavioral ?? 0
-    );
+  const behavioral = Number(
+    parsed?.scores?.behavioral ?? 0
+  );
 
   const confidence =
-    validation.confidence ===
-    "high"
+    validation.confidence === "high"
       ? 90
       : validation.confidence ===
           "medium"
@@ -122,13 +113,27 @@ function calculateDeterministicScore(
         : 45;
 
   const weighted =
-    communication * 0.3 +
-    technical * 0.35 +
-    behavioral * 0.2 +
+    communication * 0.35 +
+    technical * 0.25 +
+    behavioral * 0.25 +
     confidence * 0.15;
 
-  const overall =
-    clamp(Math.round(weighted));
+  let overall = clamp(
+    Math.round(weighted)
+  );
+
+  if (
+    validation.status ===
+    "insufficient_data"
+  ) {
+    overall = Math.min(overall, 55);
+  }
+
+  if (
+    validation.evidenceCoverage < 35
+  ) {
+    overall = Math.min(overall, 50);
+  }
 
   let recommendation:
     | "Strong Hire"
@@ -190,46 +195,73 @@ function buildFallbackEvaluation(
   transcript: string,
   lowSignal: boolean
 ) {
+  const transcriptLength =
+    transcript.trim().length;
+
+  const extremelyShort =
+    transcriptLength < 120;
+
   return {
     overview: lowSignal
-      ? "Limited recruiter-grade signal was captured during the interview."
+      ? extremelyShort
+        ? "Very limited recruiter signal was captured due to the short interview duration."
+        : "Limited recruiter-grade signal was captured during the interview."
       : "Candidate completed the interview with measurable communication and behavioral signals.",
 
     recruiterSummary:
       lowSignal
-        ? "Conversation quality was insufficient for a reliable hiring recommendation. Human recruiter follow-up is advised."
+        ? extremelyShort
+          ? "Interview duration and response depth were insufficient for a confident hiring recommendation. Additional recruiter follow-up is strongly recommended before making a decision."
+          : "Conversation quality was partially insufficient for a reliable recruiter-grade evaluation. Follow-up probing is recommended."
         : "Candidate demonstrated usable recruiter signal with observable communication and engagement patterns.",
 
     hiringRecommendation:
       lowSignal
         ? "Hold / Human Review"
-        : "Maybe",
+        : "Proceed",
 
     strengths: lowSignal
-      ? []
+      ? [
+          "Candidate participated in the interview process",
+        ]
       : [
           "Maintained interview participation",
+          "Provided partially usable communication signal",
         ],
 
-    weaknesses: [
-      "Evaluation fallback mode triggered",
-    ],
+    weaknesses: extremelyShort
+      ? [
+          "Interview duration was too short for reliable evaluation",
+          "Insufficient transcript evidence",
+        ]
+      : [
+          "Limited depth and specificity in several responses",
+          "Evaluation fallback mode triggered",
+        ],
 
     uncertaintyIndicators: [
       "AI structured extraction fallback activated.",
+      ...(extremelyShort
+        ? [
+            "Transcript length was extremely limited.",
+          ]
+        : []),
     ],
 
     observedFacts: [],
 
     scores: {
       communication:
-        lowSignal ? 40 : 60,
+        lowSignal ? 58 : 68,
+
       technical:
-        lowSignal ? 35 : 55,
+        lowSignal ? 52 : 65,
+
       behavioral:
-        lowSignal ? 45 : 60,
+        lowSignal ? 60 : 70,
+
       overall:
-        lowSignal ? 40 : 58,
+        lowSignal ? 57 : 67,
     },
 
     confidence: lowSignal
@@ -321,6 +353,7 @@ export async function POST(
           ok: false,
           code:
             "EMPTY_TRANSCRIPT",
+
           error:
             "No usable transcript found.",
         },
@@ -346,6 +379,7 @@ export async function POST(
           ok: false,
           code:
             "MISSING_API_KEY",
+
           error:
             "Gemini API key missing.",
         },
@@ -373,11 +407,11 @@ export async function POST(
       );
 
     let rawEvaluation = "";
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let parsed: any = null;
 
-    let recoveryUsed =
-      false;
+    let recoveryUsed = false;
 
     try {
       const generation =
@@ -411,8 +445,7 @@ export async function POST(
     }
 
     if (
-      typeof parsed !==
-        "object" ||
+      typeof parsed !== "object" ||
       !parsed
     ) {
       parsed =
@@ -469,8 +502,20 @@ export async function POST(
         validation
       );
 
+    if (
+      (body.meta?.durationSeconds ??
+        0) < 45
+    ) {
+      deterministic.overall =
+        Math.min(
+          deterministic.overall,
+          25
+        );
+    }
+
     parsed.scores = {
       ...parsed.scores,
+
       overall:
         deterministic.overall,
     };
@@ -555,29 +600,63 @@ export async function POST(
       );
     }
 
-    const dbConfigured = isSupabaseConfigured();
-    const persistStatus = dbConfigured
-      ? ("queued" as const)
-      : ("skipped" as const);
+    const dbConfigured =
+      isSupabaseConfigured();
+
+    const persistStatus =
+      dbConfigured
+        ? ("queued" as const)
+        : ("skipped" as const);
 
     if (dbConfigured) {
+      const detectedName =
+        cleanedTranscript.match(
+          /my name is ([a-z ]+)/i
+        )?.[1]?.trim() ??
+        "Unknown Candidate";
+
       const payload = {
-        candidate_name: "Unknown Candidate",
-        transcript: cleanedTranscript,
+        candidate_name:
+          detectedName,
+
+        transcript:
+          cleanedTranscript,
+
         evaluation: parsed,
-        recommendation: parsed.hiringRecommendation,
-        score: deterministic.overall,
-        confidence: parsed.confidence,
-        transcript_integrity: parsed.transcriptIntegrity,
+
+        recommendation:
+          parsed.hiringRecommendation,
+
+        score:
+          deterministic.overall,
+
+        confidence:
+          parsed.confidence,
+
+        transcript_integrity:
+          parsed.transcriptIntegrity,
+
         low_signal: lowSignal,
-        telemetry: parsed.telemetry,
-        created_at: new Date().toISOString(),
+
+        telemetry:
+          parsed.telemetry,
+
+        created_at:
+          new Date().toISOString(),
       };
 
-      queueCandidateReportPersist(requestId, payload);
-      logServer("evaluate", "persist_queued", {
+      queueCandidateReportPersist(
         requestId,
-      });
+        payload
+      );
+
+      logServer(
+        "evaluate",
+        "persist_queued",
+        {
+          requestId,
+        }
+      );
     }
 
     console.info(
@@ -603,10 +682,16 @@ export async function POST(
 
     return Response.json({
       ok: true,
-      evaluation: rawEvaluation,
+
+      evaluation:
+        rawEvaluation,
+
       parsed,
+
       persisted: false,
+
       persistStatus,
+
       dbConfigured,
     });
   } catch (error) {
@@ -627,8 +712,11 @@ export async function POST(
     return Response.json(
       {
         ok: false,
+
         code,
+
         error: message,
+
         evaluation:
           "Evaluation pipeline failed safely.",
       },
