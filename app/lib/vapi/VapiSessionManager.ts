@@ -271,10 +271,14 @@ export class VapiSessionManager {
     }
 
     try {
-      this.client.removeListener(
-        event as never,
-        listener
-      );
+        (this.client.removeListener as any)(
+          event,
+          listener
+        );
+      } catch {
+        // ignore invalid listener teardown
+      }
+);
     } catch {
       // ignore invalid listener teardown
     }
