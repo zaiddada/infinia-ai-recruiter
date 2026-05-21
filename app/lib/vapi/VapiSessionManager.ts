@@ -72,8 +72,9 @@ function sleep(
 }
 
 export class VapiSessionManager {
-  private static singleton: VapiSessionManager | null =
-    null;
+  private static singleton:
+    | VapiSessionManager
+    | null = null;
 
   static getInstance(): VapiSessionManager {
     if (
@@ -126,18 +127,23 @@ export class VapiSessionManager {
 
   private mountCount = 0;
 
-  private activeHandlers: VapiSessionHandlers | null =
-    null;
+  private activeHandlers:
+    | VapiSessionHandlers
+    | null = null;
 
-  private connectTimeoutId: ReturnType<
-    typeof setTimeout
-  > | null = null;
+  private connectTimeoutId:
+    | ReturnType<
+        typeof setTimeout
+      >
+    | null = null;
 
-  private stopPromise: Promise<void> | null =
-    null;
+  private stopPromise:
+    | Promise<void>
+    | null = null;
 
-  private startPromise: Promise<void> | null =
-    null;
+  private startPromise:
+    | Promise<void>
+    | null = null;
 
   private callGeneration = 0;
 
@@ -242,7 +248,9 @@ export class VapiSessionManager {
 
   private safeOn(
     event: string,
-    listener?: (...args: any[]) => void
+    listener?: (
+      ...args: any[]
+    ) => void
   ): void {
     if (
       !this.client ||
@@ -268,7 +276,9 @@ export class VapiSessionManager {
 
   private safeOff(
     event: string,
-    listener?: (...args: any[]) => void
+    listener?: (
+      ...args: any[]
+    ) => void
   ): void {
     if (
       !this.client ||
@@ -280,7 +290,8 @@ export class VapiSessionManager {
 
     try {
       (
-        this.client.removeListener as (
+        this.client
+          .removeListener as (
           event: string,
           listener: (
             ...args: any[]
