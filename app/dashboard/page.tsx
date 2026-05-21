@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { CandidateCard } from "@/components/dashboard/CandidateCard";
 import { supabaseServer } from "@/lib/supabase/server";
 
