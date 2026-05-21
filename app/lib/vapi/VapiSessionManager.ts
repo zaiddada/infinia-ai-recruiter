@@ -246,55 +246,47 @@ export class VapiSessionManager {
   ): void {
     if (
       !this.client ||
-      typeof listener !== "function"
+      typeof listener !==
+        "function"
     ) {
       return;
     }
-  
+
     try {
       (
         this.client.on as (
           event: string,
-          listener: (...args: any[]) => void
+          listener: (
+            ...args: any[]
+          ) => void
         ) => void
       )(event, listener);
     } catch {
       // ignore invalid listener attach
     }
   }
-  
+
   private safeOff(
     event: string,
     listener?: (...args: any[]) => void
   ): void {
     if (
       !this.client ||
-      typeof listener !== "function"
+      typeof listener !==
+        "function"
     ) {
       return;
     }
-  
+
     try {
       (
         this.client.removeListener as (
           event: string,
-          listener: (...args: any[]) => void
+          listener: (
+            ...args: any[]
+          ) => void
         ) => void
       )(event, listener);
-    } catch {
-      // ignore invalid listener teardown
-    }
-  }
-
-    try {
-      try {
-        (this.client.removeListener as any)(
-          event,
-          listener
-        );
-      } catch {
-        // ignore invalid listener teardown
-      }
     } catch {
       // ignore invalid listener teardown
     }
